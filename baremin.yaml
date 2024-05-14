@@ -1,0 +1,109 @@
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+static_resources: # Defines static configurations for listeners and clusters
+  listeners: # Configurations related to incoming connections
+    - name: listener_0 # Name of the listener
+      address: # Address configuration
+        socket_address:
+          address: 0.0.0.0 # Accepts connections on all available IP addresses
+          port_value: 10001 # Listens on port 10001
+      filter_chains: # Filter chains for handling incoming connections
+        - filters: # Filters applied to incoming connections
+          - name: envoy.filters.network.http_connection_manager # HTTP connection manager filter
+            typed_config: # Configuration for HTTP connection manager
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              access_log: # Configuring access logs for this connection manager
+                - name: envoy.access_loggers.stdout # Log to standard output
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              stat_prefix: ingress_http # Prefix for metrics related to this connection manager
+              route_config: # Configuration for routing incoming requests
+                name: local_route # Name for this route configuration
+                virtual_hosts: # Virtual hosts configuration
+                  - name: local_service # Name of the virtual host for local services
+                    domains: ["grpc-dineth-host.gw.wso2.com", "grpc-dineth-host.gw.wso2.com:*"] # Domains served by this virtual host (in this case, any domain)
+                    routes: # Route configurations for requests
+                       
+                      - match:
+                          #path: "/StudentService/" # Matching requests with any path prefix
+                          grpc: {}
+                          safe_regex:
+                            google_re2: {}
+                            regex: "^/dineth\\.grpc\\.api\\.v1\\.student\\.StudentService/GetStudent"
+                        route: # Route configuration for matched requests
+                          regex_rewrite:
+                              pattern:
+                                google_re2: {}
+                                regex: "^/dineth\\.grpc\\.api\\.v1\\.student\\.StudentService/GetStudent"
+                              substitution: "/student.StudentService/GetStudent"
+                          cluster: grpc # Routes requests to the 'grpc' cluster
+                          timeout: 25.00s # Timeout for this route
+                        typed_per_filter_config: # Configuration specific to filters
+                          envoy.filters.http.grpc_http1_reverse_bridge: # gRPC HTTP1 reverse bridge filter
+                            "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_http1_reverse_bridge.v3.FilterConfigPerRoute
+                          envoy.filters.http.lua:
+                            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.LuaPerRoute
+                            source_code:
+                              inline_string: |
+                                function envoy_on_request(request_handle)
+                                  request_handle:logInfo("\n\nThis is the Student filter for request\n.")
+                                  request_handle:logInfo("--- Headers ---")
+                                  for key, value in pairs(request_handle:headers()) do
+                                  request_handle:logInfo(key .. ": " .. value)
+                                  end
+                                end
+                                function envoy_on_response(response_handle)
+                                  response_handle:logInfo("\n\nThis is the Student filter for response\n.")
+                                  response_handle:logInfo("--- Headers ---")
+                                  for key, value in pairs(response_handle:headers()) do
+                                  response_handle:logInfo(key .. ": " .. value)
+                                  end
+                                end                      
+                      - match: # Matching requests with an empty prefix
+                          prefix: "" # Matches any request without a specific path prefix
+                        route: # Route configuration for matched requests
+                          host_rewrite_literal: localhost # Rewrites the host header to 'localhost'
+                          cluster: grpc # Routes requests to the 'grpc' cluster
+                          timeout: 25.00s # Timeout for this route
+
+              http_filters: # HTTP filters applied to incoming requests
+                - name: envoy.filters.http.lua # Lua filter for custom request handling
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                    inline_code: |
+                        function envoy_on_request(request_handle)
+                          local path = request_handle:headers():get(":path")
+                        request_handle:logInfo("\n\ngRPC method invoked: " .. path.. "(Main filter)\n")
+                        request_handle:logInfo("--- Headers ---")
+                        for key, value in pairs(request_handle:headers()) do
+                        request_handle:logInfo(key .. ": " .. value)
+                        end
+                        end
+                - name: envoy.filters.http.router # Default router filter
+  clusters: # Definitions of upstream clusters for outgoing requests
+    - name: grpc # Name of the cluster (grpc)
+      type: STRICT_DNS # Type of cluster (strict DNS)
+      connect_timeout: 20.000s # Timeout for establishing connections
+      lb_policy: ROUND_ROBIN # Load balancing policy (round-robin)
+      typed_extension_protocol_options: # Protocol options for the cluster
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {} # Configuring HTTP/2 protocol options
+      load_assignment: # Configuration for load assignment to this cluster
+        cluster_name: grpc # Name of the cluster to load balance to ('grpc')
+        endpoints: # Endpoints (addresses) within this cluster
+          - lb_endpoints:
+              - endpoint:
+                  address: # Address configuration for endpoint
+                    socket_address:
+                      address: localhost # Address of the endpoint (localhost)
+                      port_value: 6565 # Port of the endpoint
+layered_runtime: # Runtime configuration for Envoy
+  layers: # Runtime layers
+    - name: disable_apple_dns # Layer for disabling Apple DNS lookups
+      static_layer: # Static configuration layer
+        envoy.restart_features.use_apple_api_for_dns_lookups: false # Disable the use of Apple API for DNS lookups
